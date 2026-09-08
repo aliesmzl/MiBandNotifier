@@ -1,0 +1,18 @@
+# Rust
+/target/
+crates/*/target/
+
+# Node（手环快应用）
+node_modules/
+band-app/dist/
+band-app/sign/
+band-app/.cache/
+
+# 本地二进制与日志
+tools/ntfy.exe
+tools/ntfy*.zip
+*.log
+
+# 本地私有配置
+*.local.toml
+.env
