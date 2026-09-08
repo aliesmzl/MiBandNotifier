@@ -1,0 +1,113 @@
+<template>
+  <div class="page">
+    <div class="header">
+      <text class="title">设置</text>
+    </div>
+
+    <div class="form">
+      <text class="label">GLM API Key</text>
+      <input
+        class="input"
+        type="text"
+        value="{{apiKey}}"
+        placeholder="粘贴 bigmodel API Key"
+        onchange="onKeyChange"
+      />
+      <div class="hint">
+        <text class="hint-text">bigmodel.cn 控制台 → API Keys 生成。Key 只保存在手环本地存储。</text>
+      </div>
+    </div>
+
+    <div class="actions">
+      <div class="button" onclick="save">
+        <text class="button-text">保存</text>
+      </div>
+      <div class="button secondary" onclick="back">
+        <text class="button-text">返回</text>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script>
+import storage from '@system.storage'
+
+export default {
+  data: {
+    apiKey: ''
+  },
+  onInit() {
+    const self = this
+    storage.get({ key: 'glm_api_key', success: function (value) {
+      if (value) self.apiKey = value
+    }})
+  },
+  onKeyChange(event) {
+    this.apiKey = event.value
+  },
+  save() {
+    const self = this
+    storage.set({ key: 'glm_api_key', value: this.apiKey.trim(), success: function () {
+      self.$page.back()
+    }})
+  },
+  back() {
+    this.$page.back()
+  }
+}
+</script>
+
+<style>
+.page {
+  flex-direction: column;
+  padding: 12px;
+}
+.header {
+  margin-bottom: 10px;
+}
+.title {
+  font-size: 20px;
+  color: #ffffff;
+  font-weight: bold;
+}
+.form {
+  margin-bottom: 12px;
+}
+.label {
+  font-size: 14px;
+  color: #b0bec5;
+  margin-bottom: 6px;
+}
+.input {
+  height: 40px;
+  padding: 8px;
+  border-radius: 8px;
+  background-color: #263238;
+  color: #ffffff;
+  font-size: 14px;
+}
+.hint {
+  margin-top: 6px;
+}
+.hint-text {
+  font-size: 11px;
+  color: #78909c;
+}
+.actions {
+  flex-direction: row;
+  justify-content: center;
+}
+.button {
+  margin: 8px;
+  padding: 10px 24px;
+  border-radius: 10px;
+  background-color: #1976d2;
+}
+.button.secondary {
+  background-color: #455a64;
+}
+.button-text {
+  font-size: 15px;
+  color: #ffffff;
+}
+</style>

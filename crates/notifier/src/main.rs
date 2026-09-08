@@ -18,6 +18,7 @@ mod hook;
 mod net;
 mod ntfy;
 mod quota;
+mod startup;
 mod toast;
 mod zcode_hooks;
 
@@ -65,6 +66,8 @@ fn main() {
     match arguments.get(1).map(String::as_str) {
         Some("install-hooks") => exit_with(zcode_hooks::install(&current_exe_string())),
         Some("uninstall-hooks") => exit_with(zcode_hooks::uninstall()),
+        Some("install-startup") => exit_with(startup::install(&current_exe_string())),
+        Some("uninstall-startup") => exit_with(startup::uninstall()),
         Some("query") => exit_with(run_query_cli()),
         Some("notify") => exit_with(run_notify_cli(&arguments[2..])),
         Some("ntfy-info") => exit_with(run_ntfy_info()),
@@ -106,12 +109,14 @@ fn print_help_and_exit() {
         "{APP_NAME} — 把 zcode 任务事件与 AI 额度推送到小米手环\n\
          \n\
          用法:\n\
-         \x20 MiBandNotifier                 常驻托盘模式（日常使用，开机自启）\n\
-         \x20 MiBandNotifier install-hooks   安装 zcode hooks（写 ~/.zcode/cli/config.json）\n\
-         \x20 MiBandNotifier uninstall-hooks 卸载 zcode hooks\n\
-         \x20 MiBandNotifier query           立即查询额度并推送\n\
-         \x20 MiBandNotifier notify test     发送测试通知（验收链路）\n\
-         \x20 MiBandNotifier ntfy-info       显示手机订阅地址与防火墙提示\n\
+         \x20 MiBandNotifier                    常驻托盘模式（日常使用，开机自启）\n\
+         \x20 MiBandNotifier install-hooks      安装 zcode hooks（写 ~/.zcode/cli/config.json）\n\
+         \x20 MiBandNotifier uninstall-hooks    卸载 zcode hooks\n\
+         \x20 MiBandNotifier install-startup    设置开机自启（当前用户注册表 Run 键）\n\
+         \x20 MiBandNotifier uninstall-startup  取消开机自启\n\
+         \x20 MiBandNotifier query              立即查询额度并推送\n\
+         \x20 MiBandNotifier notify test        发送测试通知（验收链路）\n\
+         \x20 MiBandNotifier ntfy-info          显示手机订阅地址与防火墙提示\n\
          \x20 MiBandNotifier --hook <event> --owner miband-notifier   zcode hook 内部入口"
     );
     std::process::exit(0);

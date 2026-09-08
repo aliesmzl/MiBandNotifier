@@ -1,0 +1,10 @@
+<script>
+/**
+ * 应用入口：全局样式与生命周期
+ */
+export default {
+  onCreate() {
+    console.info('MiBandNotifier band app created')
+  }
+}
+</script>

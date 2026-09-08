@@ -1,0 +1,214 @@
+<template>
+  <div class="page">
+    <div class="header">
+      <text class="title">AI 额度</text>
+      <text class="refresh" onclick="refresh">刷新</text>
+    </div>
+
+    <div class="card" if="{{loaded}}">
+      <div class="row" for="{{limits}}">
+        <text class="label">{{$item.label}}</text>
+        <div class="bar-track">
+          <div class="bar-fill" style="width: {{$item.width}}px"></div>
+        </div>
+        <text class="percent">{{$item.percent}}%</text>
+        <text class="reset">{{$item.reset}}</text>
+      </div>
+    </div>
+
+    <div class="card" if="{{error}}">
+      <text class="error-text">{{error}}</text>
+    </div>
+
+    <div class="card" if="{{!loaded && !error}}">
+      <text class="loading">加载中…</text>
+    </div>
+
+    <div class="footer">
+      <text class="link" onclick="goSettings">设置 API Key</text>
+    </div>
+  </div>
+</template>
+
+<script>
+import fetch from '@system.fetch'
+import storage from '@system.storage'
+
+const ENDPOINT = 'https://open.bigmodel.cn/api/monitor/usage/quota/limit'
+const WARN_THRESHOLD = 80
+
+export default {
+  data: {
+    loaded: false,
+    error: '',
+    limits: []
+  },
+  onInit() {
+    this.refresh()
+  },
+  refresh() {
+    const self = this
+    storage.get({ key: 'glm_api_key', success: function (value) {
+      if (!value) {
+        self.error = '未设置 API Key，请先到设置页'
+        self.loaded = false
+        return
+      }
+      self.query(value)
+    }, fail: function () {
+      self.error = '未设置 API Key，请先到设置页'
+      self.loaded = false
+    }})
+  },
+  query(apiKey) {
+    const self = this
+    fetch.fetch({
+      url: ENDPOINT,
+      method: 'GET',
+      header: { 'Authorization': 'Bearer ' + apiKey, 'Accept': 'application/json' },
+      success: function (response) {
+        try {
+          const parsed = JSON.parse(response.data)
+          if (!parsed.success || !parsed.data || !parsed.data.limits) {
+            self.error = '接口返回异常 code=' + parsed.code
+            self.loaded = false
+            return
+          }
+          self.renderLimits(parsed.data.limits)
+        } catch (e) {
+          self.error = '解析失败'
+          self.loaded = false
+        }
+      },
+      fail: function (error, code) {
+        self.error = '请求失败 code=' + code
+        self.loaded = false
+      }
+    })
+  },
+  renderLimits(limits) {
+    const rows = []
+    let maxPercent = 0
+    for (let i = 0; i < limits.length; i++) {
+      const item = limits[i]
+      if (item.limitType !== 'TOKENS_LIMIT' && item.limitType !== 'CREDIT_LIMIT') continue
+      const label = this.windowLabel(item.unit, item.number)
+      if (!item.percentage && item.percentage !== 0) continue
+      const percent = Math.round(item.percentage + 0.5)
+      rows.push({
+        label: label,
+        percent: percent,
+        width: Math.round(percent * 1.6),  // 进度条最大 160px（屏宽 336 留边）
+        reset: item.nextResetTime ? this.formatReset(item.nextResetTime) : ''
+      })
+      if (percent > maxPercent) maxPercent = percent
+    }
+    this.limits = rows
+    this.error = ''
+    this.loaded = rows.length > 0
+    if (rows.length === 0) {
+      this.error = '无窗口数据'
+      this.loaded = false
+    }
+    if (maxPercent >= WARN_THRESHOLD) {
+      this.vibrate()
+    }
+  },
+  windowLabel(unit, number) {
+    if (unit === 3 && number === 5) return '5小时窗'
+    if (unit === 6 && number === 1) return '周窗'
+    if (unit === 5 && number === 1) return '月窗'
+    return '窗口'
+  },
+  formatReset(raw) {
+    // 秒/毫秒自适应
+    let millis = raw
+    if (raw < 10000000000) millis = raw * 1000
+    const date = new Date(millis)
+    const pad = function (value) { return value < 10 ? '0' + value : '' + value }
+    return pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes())
+  },
+  vibrate() {
+    import('@system.vibrator').then(function (vibrator) {
+      vibrator.vibrate({ mode: 'long' })
+    })
+  },
+  goSettings() {
+    this.$page.routeTo('pages/settings')
+  }
+}
+</script>
+
+<style>
+.page {
+  flex-direction: column;
+  padding: 12px;
+}
+.header {
+  flex-direction: row;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.title {
+  font-size: 20px;
+  color: #ffffff;
+  font-weight: bold;
+}
+.refresh {
+  font-size: 14px;
+  color: #64b5f6;
+}
+.card {
+  margin-bottom: 10px;
+}
+.row {
+  flex-direction: row;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.label {
+  width: 70px;
+  font-size: 14px;
+  color: #b0bec5;
+}
+.bar-track {
+  width: 160px;
+  height: 10px;
+  border-radius: 5px;
+  background-color: #37474f;
+}
+.bar-fill {
+  height: 10px;
+  border-radius: 5px;
+  background-color: #4fc3f7;
+}
+.percent {
+  width: 44px;
+  font-size: 14px;
+  color: #ffffff;
+  margin-left: 6px;
+  text-align: right;
+}
+.reset {
+  font-size: 11px;
+  color: #78909c;
+  margin-left: 6px;
+}
+.error-text {
+  font-size: 14px;
+  color: #ef5350;
+}
+.loading {
+  font-size: 14px;
+  color: #b0bec5;
+}
+.footer {
+  margin-top: 4px;
+  flex-direction: row;
+  justify-content: center;
+}
+.link {
+  font-size: 13px;
+  color: #64b5f6;
+}
+</style>

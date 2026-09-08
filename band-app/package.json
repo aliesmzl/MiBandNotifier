@@ -1,0 +1,13 @@
+{
+  "name": "miband-notifier-band",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI quota card for Xiaomi Smart Band 9 Pro (Vela quick app)",
+  "scripts": {
+    "build": "aiot build",
+    "release": "aiot release"
+  },
+  "devDependencies": {
+    "aiot-toolkit": "^2.0.5"
+  }
+}

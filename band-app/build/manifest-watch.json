@@ -1,0 +1,43 @@
+{
+  "package": "com.miband.notifier.band",
+  "name": "AI额度",
+  "versionName": "0.1.0",
+  "versionCode": 1,
+  "minPlatformVersion": 1200,
+  "icon": "/common/logo.png",
+  "deviceTypeList": [
+    "watch"
+  ],
+  "features": [
+    {
+      "name": "system.fetch"
+    },
+    {
+      "name": "system.network"
+    },
+    {
+      "name": "system.vibrator"
+    },
+    {
+      "name": "system.storage"
+    },
+    {
+      "name": "system.router"
+    }
+  ],
+  "config": {
+    "logLevel": "warn",
+    "designWidth": 336
+  },
+  "router": {
+    "entry": "pages/index",
+    "pages": {
+      "pages/index": {
+        "component": "index"
+      },
+      "pages/settings": {
+        "component": "settings"
+      }
+    }
+  }
+}
