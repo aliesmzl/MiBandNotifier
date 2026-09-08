@@ -34,8 +34,8 @@ use windows_sys::Win32::UI::Shell::{
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadCursorW, PostQuitMessage,
-    RegisterClassExW, TranslateMessage, IDC_ARROW, MSG, WNDCLASSEXW, WM_APP, WM_CONTEXTMENU,
-    WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WS_OVERLAPPED,
+    RegisterClassExW, TranslateMessage, WM_COMMAND, IDC_ARROW, MSG, WNDCLASSEXW, WM_APP,
+    WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WS_OVERLAPPED,
 };
 
 const APP_NAME: &str = "MiBandNotifier";
@@ -46,7 +46,8 @@ const TRAY_ICON_ID: u32 = 1;
 struct AppService {
     config: config::Config,
     pause_push: std::sync::atomic::AtomicBool,
-    quota_summary: Mutex<String>,
+    quota_summary: Arc<Mutex<String>>,
+    notification_tx: tokio::sync::mpsc::Sender<ntfy::Notification>,
     runtime: tokio::runtime::Runtime,
 }
 
@@ -149,51 +150,15 @@ fn run_query_cli() -> Result<String, String> {
     let config = config::load_or_create()?;
     let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
     runtime.block_on(async move {
-        let mut lines = Vec::new();
-        if config.glm.enabled {
-            match quota::glm::fetch(&config.glm).await {
-                Ok(result) => lines.push(result.display_summary()),
-                Err(error) => lines.push(format!("GLM 查询失败: {error}")),
-            }
-        }
-        for provider in &config.custom {
-            if !provider.enabled {
-                continue;
-            }
-            match quota::custom::fetch(provider).await {
-                Ok(result) => lines.push(result.display_summary()),
-                Err(error) => lines.push(format!("{} 查询失败: {error}", provider.name)),
-            }
-        }
-        if config.deepseek.enabled {
-            match quota::deepseek::fetch(&config.deepseek).await {
-                Ok(result) => lines.push(result.display_summary()),
-                Err(error) => lines.push(format!("DeepSeek 查询失败: {error}")),
-            }
-        }
-        if config.siliconflow.enabled {
-            match quota::siliconflow::fetch(&config.siliconflow).await {
-                Ok(result) => lines.push(result.display_summary()),
-                Err(error) => lines.push(format!("SiliconFlow 查询失败: {error}")),
-            }
-        }
-        if lines.is_empty() {
+        let results = quota::query_all(&config).await;
+        if results.is_empty() {
             return Ok("没有启用的额度 Provider（编辑 config.toml 填入 API Key）".to_string());
         }
-        let summary = lines.join("\n");
-        println!("{summary}");
+        let notification = quota::render_notification(&results);
+        println!("{}", notification.body);
         // query 命令也走一次推送，方便远程验收
-        push_notification(
-            &config,
-            &ntfy::Notification {
-                title: "额度查询".to_string(),
-                body: summary.clone(),
-                tags: vec!["chart".to_string()],
-                priority: 3,
-            },
-        )
-        .await;
-        Ok(summary)
+        push_notification(&config, &notification).await;
+        Ok(notification.body)
     })
 }
 
@@ -263,7 +228,7 @@ fn local_addresses() -> Vec<if_addrs::Interface> {
 // 推送统一出口（toast + ntfy）
 // ---------------------------------------------------------------------------
 
-enum PushOutcome {
+pub enum PushOutcome {
     Both,
     ToastOnly,
     NtfyOnly,
@@ -296,20 +261,32 @@ async fn push_notification(config: &config::Config, notification: &ntfy::Notific
 // 常驻托盘模式
 // ---------------------------------------------------------------------------
 
+/// 托盘菜单命令（WM_COMMAND）
+#[cfg(windows)]
+const MENU_QUERY_NOW: u32 = 1001;
+#[cfg(windows)]
+const MENU_TOGGLE_PAUSE: u32 = 1002;
+#[cfg(windows)]
+const MENU_QUIT: u32 = 1003;
+
 fn run_tray() -> Result<(), String> {
     let config = config::load_or_create()?;
     let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
 
+    // 推送通道：调度器/托盘菜单 → 消费者统一推送（toast + ntfy）
+    let (notification_tx, notification_rx) = tokio::sync::mpsc::channel::<ntfy::Notification>(64);
+
     let service = Arc::new(AppService {
-        config,
+        config: config.clone(),
         pause_push: std::sync::atomic::AtomicBool::new(false),
-        quota_summary: Mutex::new(String::from("额度未查询")),
+        quota_summary: Arc::new(Mutex::new(String::from("额度未查询"))),
+        notification_tx,
         runtime,
     });
     APP.set(service.clone()).map_err(|_| "重复初始化".to_string())?;
 
-    // 后台任务：spool 轮询 + 额度调度
-    start_background(service.clone());
+    // 后台任务：spool 轮询 + 额度调度 + 推送消费者
+    start_background(service.clone(), notification_rx);
 
     #[cfg(windows)]
     unsafe {
@@ -333,7 +310,10 @@ fn run_tray() -> Result<(), String> {
     Ok(())
 }
 
-fn start_background(service: Arc<AppService>) {
+fn start_background(
+    service: Arc<AppService>,
+    mut notification_rx: tokio::sync::mpsc::Receiver<ntfy::Notification>,
+) {
     let spool_dir = config::data_dir().join("hook-spool");
     // 启动时清理 7 天前的事件
     hook::prune_stale_events(&spool_dir, chrono::Duration::days(7));
@@ -347,10 +327,18 @@ fn start_background(service: Arc<AppService>) {
             }
         }
     });
-    // 额度调度（M2 完整实现；当前先占位保持结构）
-    let quota_service = service.clone();
+    // 推送消费者：统一走 toast + ntfy 出口
+    let push_config = service.config.clone();
     service.runtime.spawn(async move {
-        quota::run_scheduler(quota_service.config.clone()).await;
+        while let Some(notification) = notification_rx.recv().await {
+            let _ = push_notification(&push_config, &notification).await;
+        }
+    });
+    // 额度调度（告警经通道推送）
+    let scheduler_config = service.config.clone();
+    let scheduler_tx = service.notification_tx.clone();
+    service.runtime.spawn(async move {
+        quota::run_scheduler(scheduler_config, scheduler_tx).await;
     });
 }
 
@@ -386,8 +374,7 @@ async fn handle_hook_record(service: &Arc<AppService>, record: &hook::SpoolRecor
             hook::HookEvent::PermissionRequest => 5,
         },
     };
-    let outcome = push_notification(&service.config, &notification).await;
-    let _ = outcome;
+    let _ = service.notification_tx.send(notification).await;
 }
 
 #[cfg(windows)]
@@ -494,8 +481,13 @@ unsafe extern "system" fn tray_window_proc(
         TRAY_MESSAGE => {
             let event = lparam as u32;
             if event == WM_RBUTTONUP || event == WM_CONTEXTMENU || event == WM_LBUTTONDBLCLK {
-                // M1 先只响应事件；托盘菜单（立即查询/暂停推送/退出）在 M2 接入
+                unsafe { show_tray_menu(window) };
             }
+            0
+        }
+        WM_COMMAND => {
+            let command = (wparam & 0xFFFF) as u32;
+            handle_menu_command(command);
             0
         }
         WM_DESTROY => {
@@ -503,5 +495,90 @@ unsafe extern "system" fn tray_window_proc(
             0
         }
         _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
+    }
+}
+
+#[cfg(windows)]
+fn handle_menu_command(command: u32) {
+    let Some(service) = APP.get() else { return };
+    match command {
+        MENU_QUERY_NOW => {
+            let config = service.config.clone();
+            let sender = service.notification_tx.clone();
+            let summary_slot = service.quota_summary.clone();
+            service.runtime.spawn(async move {
+                let results = quota::query_all(&config).await;
+                let notification = quota::render_notification(&results);
+                if let Ok(mut summary) = summary_slot.lock() {
+                    *summary = notification.body.clone();
+                }
+                let _ = sender.send(notification).await;
+            });
+        }
+        MENU_TOGGLE_PAUSE => {
+            let paused = service
+                .pause_push
+                .fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+            // 取反后即为当前状态
+            let now_paused = !paused;
+            let body = if now_paused {
+                        "已暂停推送（再点一次恢复）".to_string()
+                    } else {
+                        "已恢复推送".to_string()
+                    };
+                let _ = toast::show(&toast::ToastContent {
+                    title: APP_NAME.to_string(),
+                    body,
+                });
+        }
+        MENU_QUIT => {
+            unsafe { PostQuitMessage(0) };
+        }
+        _ => {}
+    }
+}
+
+#[cfg(windows)]
+unsafe fn show_tray_menu(window: HWND) {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, SetForegroundWindow,
+        TrackPopupMenu, MF_BYCOMMAND, MF_CHECKED, MF_STRING, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+        TPM_RIGHTBUTTON,
+    };
+    let menu = unsafe { CreatePopupMenu() };
+    if menu.is_null() {
+        return;
+    }
+    let paused = APP
+        .get()
+        .map(|service| service.pause_push.load(std::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(false);
+    let query_label = wide("立即查询额度");
+    let pause_label = wide(if paused { "恢复推送" } else { "暂停推送" });
+    let quit_label = wide("退出");
+    unsafe {
+        AppendMenuW(menu, MF_STRING | MF_BYCOMMAND, MENU_QUERY_NOW as usize, query_label.as_ptr());
+        AppendMenuW(
+            menu,
+            MF_STRING | MF_BYCOMMAND | if paused { MF_CHECKED } else { 0 },
+            MENU_TOGGLE_PAUSE as usize,
+            pause_label.as_ptr(),
+        );
+        AppendMenuW(menu, MF_STRING | MF_BYCOMMAND, MENU_QUIT as usize, quit_label.as_ptr());
+        let mut cursor = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut cursor) != 0 {
+            SetForegroundWindow(window);
+            TrackPopupMenu(
+                menu,
+                TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RIGHTBUTTON,
+                cursor.x,
+                cursor.y,
+                0,
+                window,
+                std::ptr::null(),
+            );
+        }
+        DestroyMenu(menu);
     }
 }
