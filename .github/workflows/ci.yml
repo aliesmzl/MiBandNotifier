@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml 固定 x86_64-pc-windows-gnu 目标
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      # GNU 目标需要 MinGW 的 as/dlltool（runner 预装 mingw）
+      - name: Add MinGW to PATH
+        shell: pwsh
+        run: |
+          $mingw = "C:\ProgramData\mingw64\mingw64\bin"
+          if (-not (Test-Path $mingw)) { $mingw = "C:\mingw64\bin" }
+          if (-not (Test-Path $mingw)) { choco install mingw -y --no-progress; $mingw = "C:\ProgramData\mingw64\mingw64\bin" }
+          echo $mingw | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$mingw\gcc.exe" --version
+
+      - name: Rust tests
+        shell: pwsh
+        run: cargo test --workspace
+
+      - name: Build release
+        shell: pwsh
+        run: cargo build --release
+
+      - name: Band app build (RPK)
+        shell: pwsh
+        run: |
+          cd band-app
+          npm install
+          npm run build
+
+      - name: Package
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/package.ps1
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiBandNotifier-windows
+          path: |
+            dist/*.zip
+            band-app/dist/*.rpk
+          if-no-files-found: warn

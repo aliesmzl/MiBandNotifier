@@ -83,10 +83,21 @@ docs/             详细文档
 ## 状态
 
 - [x] M0 仓库初始化
-- [x] M1 核心链路：hook 接收 + toast + ntfy 推送
-- [x] M2 额度查询：GLM / DeepSeek / SiliconFlow / 自定义 Provider
-- [ ] M3 手环快应用（fetch 真机验证中）
-- [ ] M4 开机自启与打包发布
+- [x] M1 核心链路：hook 接收 + toast + ntfy 推送（端到端验收通过）
+- [x] M2 额度查询：GLM / DeepSeek / SiliconFlow / 自定义 Provider（DeepSeek 真实余额实测通过）
+- [ ] M3 手环快应用（RPK 已产出，待真机验证 fetch）
+- [x] M4 开机自启、打包发布、CI
+
+## 打包与 CI
+
+```powershell
+# 本地打包（exe + scripts + docs + tools\ntfy.exe → dist\*.zip）
+powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -Root <仓库绝对路径>
+```
+
+推送后 GitHub Actions（.github/workflows/ci.yml）自动执行：rust 测试 → release 构建 → band-app RPK 构建 → 打包，产物在 Actions Artifacts。
+
+> 注意：scripts 下 PowerShell 脚本含中文，**文件必须带 UTF-8 BOM**（PowerShell 5.1 无 BOM 时按 GBK 解析会解析错位）；构建需 MinGW 工具链（见 rust-toolchain.toml，`scoop install gcc` 后把 `~/scoop/apps/gcc/current/bin` 加入 PATH）。
 
 ## 参考
 

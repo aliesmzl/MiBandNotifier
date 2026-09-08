@@ -1,4 +1,4 @@
-# 下载 ntfy.exe（Windows 原生单二进制）到 tools 目录
+﻿# 下载 ntfy.exe（Windows 原生单二进制）到 tools 目录
 # 用法: powershell -ExecutionPolicy Bypass -File scripts\fetch-ntfy.ps1
 # 下载地址与校验方式参考官方文档 https://docs.ntfy.sh/install/
 

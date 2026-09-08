@@ -64,7 +64,12 @@ pub async fn fetch(config: &BalanceProviderConfig) -> Result<QuotaResult, String
             lines.push(format!("其中充值余额: {charge}"));
         }
     }
-    Ok(QuotaResult { provider: "siliconflow".to_string(), lines, warn_percent: None })
+    Ok(QuotaResult {
+        provider: "siliconflow".to_string(),
+        lines,
+        short: data.balance.clone(),
+        warn_percent: None,
+    })
 }
 
 #[cfg(test)]

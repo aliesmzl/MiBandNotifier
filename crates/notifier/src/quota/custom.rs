@@ -38,18 +38,21 @@ pub async fn fetch(config: &CustomProviderConfig) -> Result<QuotaResult, String>
     let value: Value =
         serde_json::from_str(&body).map_err(|error| format!("{name}: 响应不是 JSON: {error}"))?;
     let pointer = config.json_pointer.trim();
-    let line = if pointer.is_empty() {
+    let (line, short) = if pointer.is_empty() {
         // 未配置指针：展示顶层键值概览
-        summarize_object(&value)
+        let text = summarize_object(&value);
+        (format!("{name}: {text}"), text)
     } else {
         let extracted = value
             .pointer(pointer)
             .ok_or_else(|| format!("{name}: JSON 指针 {pointer} 未命中"))?;
-        format!("{name}: {}", plain_value(extracted))
+        let text = plain_value(extracted);
+        (format!("{name}: {text}"), text)
     };
     Ok(QuotaResult {
         provider: config.name.clone(),
         lines: vec![line],
+        short,
         warn_percent: None,
     })
 }

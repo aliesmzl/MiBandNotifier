@@ -1,4 +1,4 @@
-# 把 tools\ntfy.exe 注册为 Windows 服务（ntfy 官方推荐的 Windows 部署方式）。
+﻿# 把 tools\ntfy.exe 注册为 Windows 服务（ntfy 官方推荐的 Windows 部署方式）。
 # 服务监听 0.0.0.0:8090：本机推送 + 局域网手机订阅都需要。
 # 需要管理员权限运行：右键"使用管理员身份运行" PowerShell 后执行本脚本。
 #

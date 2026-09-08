@@ -88,6 +88,7 @@ pub async fn fetch(config: &GlmConfig) -> Result<QuotaResult, String> {
 
 fn build_result(data: &GlmData) -> QuotaResult {
     let mut lines = Vec::new();
+    let mut short_percents: Vec<u64> = Vec::new();
     let mut warn_percent: Option<u64> = None;
     let plan = data.plan_name.as_deref().or(data.plan.as_deref()).unwrap_or("Coding Plan");
     for limit in &data.limits {
@@ -108,6 +109,7 @@ fn build_result(data: &GlmData) -> QuotaResult {
         // 显示与告警使用同一个取整值，避免两者不一致
         let percent_rounded = (percent + 0.5).floor() as u64;
         lines.push(format!("{plan} {window}: {percent_rounded}%（重置于 {reset}）"));
+        short_percents.push(percent_rounded);
         if warn_percent.is_none() || percent_rounded > warn_percent.unwrap_or(0) {
             warn_percent = Some(percent_rounded);
         }
@@ -115,7 +117,12 @@ fn build_result(data: &GlmData) -> QuotaResult {
     if lines.is_empty() {
         lines.push(format!("{plan}: 无可用窗口数据"));
     }
-    QuotaResult { provider: "glm".to_string(), lines, warn_percent }
+    let short = short_percents
+        .iter()
+        .map(|percent| format!("{percent}%"))
+        .collect::<Vec<_>>()
+        .join("/");
+    QuotaResult { provider: "glm".to_string(), lines, short, warn_percent }
 }
 
 /// unit+number → 窗口标签

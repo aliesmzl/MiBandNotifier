@@ -31,26 +31,35 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
 use windows_sys::Win32::UI::Shell::{
     Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE,
+    NIM_MODIFY,
 };
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadCursorW, PostQuitMessage,
-    RegisterClassExW, TranslateMessage, WM_COMMAND, IDC_ARROW, MSG, WNDCLASSEXW, WM_APP,
-    WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WS_OVERLAPPED,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, LoadCursorW, PostMessageW,
+    PostQuitMessage, RegisterClassExW, TranslateMessage, WM_COMMAND, IDC_ARROW, MSG, WNDCLASSEXW,
+    WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WS_OVERLAPPED,
 };
 
 const APP_NAME: &str = "MiBandNotifier";
 const TRAY_MESSAGE: u32 = WM_APP + 1;
+const TRAY_UPDATE: u32 = WM_APP + 2;
 const TRAY_ICON_ID: u32 = 1;
 
 /// 共享后台服务：托盘菜单动作与退出时使用
 struct AppService {
     config: config::Config,
     pause_push: std::sync::atomic::AtomicBool,
-    quota_summary: Arc<Mutex<String>>,
+    quota_board: Arc<Mutex<quota::QuotaBoard>>,
     notification_tx: tokio::sync::mpsc::Sender<ntfy::Notification>,
     runtime: tokio::runtime::Runtime,
 }
+
+/// 托盘窗口句柄（后台任务用它请求刷新 tooltip）
+#[cfg(windows)]
+static TRAY_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+/// 当前 tooltip 文本（wndproc 收到 TRAY_UPDATE 时写回托盘）
+#[cfg(windows)]
+static TRAY_TIP: Mutex<String> = Mutex::new(String::new());
 
 static APP: OnceLock<Arc<AppService>> = OnceLock::new();
 
@@ -160,8 +169,7 @@ fn run_query_cli() -> Result<String, String> {
             return Ok("没有启用的额度 Provider（编辑 config.toml 填入 API Key）".to_string());
         }
         let notification = quota::render_notification(&results);
-        println!("{}", notification.body);
-        // query 命令也走一次推送，方便远程验收
+        // 交给 exit_with 统一打印，避免重复输出
         push_notification(&config, &notification).await;
         Ok(notification.body)
     })
@@ -221,7 +229,7 @@ fn run_ntfy_info() -> Result<String, String> {
          \x20 2. 手机与电脑须同一局域网\n\
          \x20 3. 小米运动健康 → APP通知提醒 → 勾选 ntfy 应用"
     );
-    println!("{output}");
+    // 交给 exit_with 统一打印
     Ok(output)
 }
 
@@ -284,7 +292,7 @@ fn run_tray() -> Result<(), String> {
     let service = Arc::new(AppService {
         config: config.clone(),
         pause_push: std::sync::atomic::AtomicBool::new(false),
-        quota_summary: Arc::new(Mutex::new(String::from("额度未查询"))),
+        quota_board: Arc::new(Mutex::new(quota::QuotaBoard::default())),
         notification_tx,
         runtime,
     });
@@ -298,12 +306,14 @@ fn run_tray() -> Result<(), String> {
         register_tray_window_class()?;
         let window = create_tray_window()?;
         let _icon = add_tray_icon(window)?;
+        TRAY_WINDOW.store(window as isize, std::sync::atomic::Ordering::Release);
         let mut message = MSG::default();
         while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 {
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
         remove_tray_icon(window);
+        TRAY_WINDOW.store(0, std::sync::atomic::Ordering::Release);
     }
     #[cfg(not(windows))]
     {
@@ -332,19 +342,43 @@ fn start_background(
             }
         }
     });
-    // 推送消费者：统一走 toast + ntfy 出口
+    // 推送消费者：统一走 toast + ntfy 出口；暂停开关只在这一处生效
+    let push_service = service.clone();
     let push_config = service.config.clone();
     service.runtime.spawn(async move {
         while let Some(notification) = notification_rx.recv().await {
+            if push_service
+                .pause_push
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                continue;
+            }
             let _ = push_notification(&push_config, &notification).await;
         }
     });
-    // 额度调度（告警经通道推送）
+    // 额度调度（独立间隔 + 指数退避；告警与看板经通道/共享状态回传）
     let scheduler_config = service.config.clone();
+    let scheduler_board = service.quota_board.clone();
     let scheduler_tx = service.notification_tx.clone();
+    let tooltip_service = service.clone();
     service.runtime.spawn(async move {
-        quota::run_scheduler(scheduler_config, scheduler_tx).await;
+        // 调度任务更新看板后刷新 tooltip
+        let watcher_board = scheduler_board.clone();
+        let watcher = tokio::spawn(async move {
+            let mut last = String::new();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                let summary = watcher_board.lock().unwrap().tooltip_summary();
+                if summary != last {
+                    last = summary.clone();
+                    update_tooltip(&format!("{APP_NAME} · {summary}"));
+                }
+            }
+        });
+        quota::run_scheduler(scheduler_config, scheduler_board, scheduler_tx).await;
+        watcher.abort();
     });
+    let _ = tooltip_service;
 }
 
 async fn handle_hook_record(service: &Arc<AppService>, record: &hook::SpoolRecord) {
@@ -353,12 +387,6 @@ async fn handle_hook_record(service: &Arc<AppService>, record: &hook::SpoolRecor
         hook::HookEvent::PermissionRequest => service.config.events.on_permission,
     };
     if !enabled {
-        return;
-    }
-    if service
-        .pause_push
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
         return;
     }
     let summary = record.summary_line();
@@ -386,6 +414,23 @@ async fn handle_hook_record(service: &Arc<AppService>, record: &hook::SpoolRecor
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::repeat(0).take(1)).collect()
 }
+
+/// 请求刷新托盘 tooltip（线程安全：改静态文本 + 投递消息，wndproc 在主线程执行）
+#[cfg(windows)]
+fn update_tooltip(text: &str) {
+    if let Ok(mut tip) = TRAY_TIP.lock() {
+        *tip = text.to_string();
+    }
+    let window = TRAY_WINDOW.load(std::sync::atomic::Ordering::Acquire);
+    if window != 0 {
+        unsafe {
+            PostMessageW(window as HWND, TRAY_UPDATE, 0, 0);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn update_tooltip(_text: &str) {}
 
 #[cfg(windows)]
 unsafe fn register_tray_window_class() -> Result<(), String> {
@@ -490,6 +535,15 @@ unsafe extern "system" fn tray_window_proc(
             }
             0
         }
+        TRAY_UPDATE => {
+            // 额度看板有更新：把最新摘要写回托盘 tooltip
+            let tip = TRAY_TIP.lock().map(|tip| tip.clone()).unwrap_or_default();
+            let mut data = unsafe { tray_icon_data(window) };
+            data.uFlags = NIF_TIP;
+            copy_wide(&mut data.szTip, &tip);
+            unsafe { Shell_NotifyIconW(NIM_MODIFY, &data) };
+            0
+        }
         WM_COMMAND => {
             let command = (wparam & 0xFFFF) as u32;
             handle_menu_command(command);
@@ -510,13 +564,15 @@ fn handle_menu_command(command: u32) {
         MENU_QUERY_NOW => {
             let config = service.config.clone();
             let sender = service.notification_tx.clone();
-            let summary_slot = service.quota_summary.clone();
+            let board = service.quota_board.clone();
             service.runtime.spawn(async move {
                 let results = quota::query_all(&config).await;
+                quota::update_board(&board, &results);
                 let notification = quota::render_notification(&results);
-                if let Ok(mut summary) = summary_slot.lock() {
-                    *summary = notification.body.clone();
-                }
+                update_tooltip(&format!(
+                    "{APP_NAME} · {}",
+                    board.lock().unwrap().tooltip_summary()
+                ));
                 let _ = sender.send(notification).await;
             });
         }
@@ -527,14 +583,14 @@ fn handle_menu_command(command: u32) {
             // 取反后即为当前状态
             let now_paused = !paused;
             let body = if now_paused {
-                        "已暂停推送（再点一次恢复）".to_string()
-                    } else {
-                        "已恢复推送".to_string()
-                    };
-                let _ = toast::show(&toast::ToastContent {
-                    title: APP_NAME.to_string(),
-                    body,
-                });
+                "已暂停推送（再点一次恢复）".to_string()
+            } else {
+                "已恢复推送".to_string()
+            };
+            let _ = toast::show(&toast::ToastContent {
+                title: APP_NAME.to_string(),
+                body,
+            });
         }
         MENU_QUIT => {
             unsafe { PostQuitMessage(0) };

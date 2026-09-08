@@ -45,6 +45,14 @@ export default {
   },
   onInit() {
     this.refresh()
+    // 每 10 分钟自动刷新一次
+    this.autoTimer = setInterval(() => this.refresh(), 10 * 60 * 1000)
+  },
+  onDestroy() {
+    if (this.autoTimer) {
+      clearInterval(this.autoTimer)
+      this.autoTimer = null
+    }
   },
   refresh() {
     const self = this

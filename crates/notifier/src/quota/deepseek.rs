@@ -52,16 +52,31 @@ pub async fn fetch(config: &BalanceProviderConfig) -> Result<QuotaResult, String
     let parsed: BalanceResponse =
         serde_json::from_str(&body).map_err(|error| format!("响应解析失败: {error}"))?;
     let mut lines = Vec::new();
+    let mut short = String::new();
     for info in &parsed.balance_infos {
         if info.total_balance.is_empty() {
             continue;
         }
         lines.push(format!("DeepSeek 余额: {} {}", info.total_balance, info.currency));
+        if short.is_empty() {
+            short = format!("{}{}", currency_symbol(&info.currency), info.total_balance);
+        }
     }
     if lines.is_empty() {
-        lines.push(format!("DeepSeek 账户可用: {}", if parsed.is_available { "是" } else { "否" }));
+        let available = if parsed.is_available { "是" } else { "否" };
+        lines.push(format!("DeepSeek 账户可用: {available}"));
+        short = "N/A".to_string();
     }
-    Ok(QuotaResult { provider: "deepseek".to_string(), lines, warn_percent: None })
+    Ok(QuotaResult { provider: "deepseek".to_string(), lines, short, warn_percent: None })
+}
+
+/// CNY 用 ¥ 显示，其他币种用代码
+fn currency_symbol(currency: &str) -> String {
+    match currency.to_ascii_uppercase().as_str() {
+        "CNY" | "RMB" => "¥".to_string(),
+        "USD" => "$".to_string(),
+        other => format!("{other} "),
+    }
 }
 
 #[cfg(test)]
