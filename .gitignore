@@ -5,8 +5,11 @@ crates/*/target/
 # Node（手环快应用）
 node_modules/
 band-app/dist/
+band-app/build/
 band-app/sign/
 band-app/.cache/
+.temp_band-app/
+*.rpk
 
 # 本地二进制与日志
 tools/ntfy.exe
