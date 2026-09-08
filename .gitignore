@@ -14,6 +14,7 @@ band-app/.cache/
 # 本地二进制与日志
 tools/ntfy.exe
 tools/ntfy*.zip
+dist/
 *.log
 
 # 本地私有配置
